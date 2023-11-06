@@ -1,0 +1,90 @@
+#!/usr/bin/env zsh
+set -eu
+set -o PIPE_FAIL
+
+fail () { echo "Error: $*" >&2; exit 1;  }
+
+print_help() {
+    # shellcheck disable=SC2086
+    cat <<EOF >&2
+Outputs teams and users for CODEOWNERS corresponding to a file path
+
+USAGE:
+gh owners path/to/code
+
+Options:
+  -h, --help             print help
+EOF
+    exit 0;
+}
+
+main() {
+    local repo;
+
+    while getopts ":h-:R:" opt; do
+        case $opt in
+            h) print_help;;
+            R) repo=${1};;
+            -) case $OPTARG in
+                help ) print_help;;
+                repo )
+                    shift $((OPTIND-1));
+                    repo=${1};
+                    ;;
+                * ) fail "Unknown long option \"${OPTARG%%=*}\"";;
+                esac;;
+            : ) fail "Short option \"$OPTARG\" missing argument";;
+            \?)
+                fail "Invalid option"
+                ;;
+        esac
+    done
+
+    if [[ -z "$repo" && ! -d .git ]]; then fail "Does not appear to be a git repository"; fi
+
+    # TODO: Handle `gh --repo dcloud/work-notes owners src` outside of file structure, or fail?
+    shift $((OPTIND-1))
+    fname="${1:?Please supply a file or directory path}"
+
+    # Find CODEOWNERS file in one of 3 places
+    local cofile;
+    if [[ -r "$PWD/CODEOWNERS" ]]; then
+        cofile="$PWD/CODEOWNERS";
+    elif [[ -r "$PWD/.github/CODEOWNERS" ]]; then
+        cofile="$PWD/.github/CODEOWNERS";
+    elif [[ -r "$PWD/docs/CODEOWNERS" ]]; then
+        cofile="$PWD/docs/CODEOWNERS";
+    fi;
+
+    if [[ -z "$cofile" ]]; then fail "No CODEOWNERS file found"; fi
+
+    # Search CODEOWNERS for $fname
+    # FIXME: Better approach than iterating over lines of the file
+    while read -r line; do
+        # Skip empty or comment lines
+        if [[ -z "$line" || "$line" =~ ^# ]]; then continue; fi;
+        # Split line into array based on spaces
+        words=(${(s: :)line});
+        # First word is the path-key
+        key="${words[1]}";
+        # Everything else are assumed to be @org/team values
+        values=(${words:1});
+
+        # Rudimentary `test` regex
+        if [[ $key =~ $fname ]]; then
+            for v in $values; do
+                echo "\e[34m$v\e[0m";
+                # TODO: Handle lone @handle args that don't fit @org/team pattern
+                org="${${v%%/*}#@}";
+                team="${v##*/}"
+                lup="/orgs/$org/teams/$team/members"
+                gh api "$lup" --template '{{range .}}{{ .login | color "green" }}: {{ .html_url }}{{ "\n" }}{{end}}{{"\n"}}';
+            done
+            echo;
+        fi;
+    done <$cofile;
+
+}
+
+
+main "${@:-}"
